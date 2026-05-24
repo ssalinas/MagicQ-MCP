@@ -12,6 +12,7 @@ import {
   type PaletteType,
 } from "./palette-registry.js";
 import { importCsv } from "./csv-import.js";
+import { StepSchema, executeSequence } from "./sequence.js";
 
 const config = getConfig();
 const server = new McpServer({ name: "magicq", version: "0.1.0" });
@@ -463,40 +464,60 @@ server.tool(
 
 server.tool(
   "program_look",
-  "Build and record a complete lighting look in one call. Selects heads, sets intensity and any attributes, records a cue, then clears the programmer. Attributes is a map of attribute_number → value.",
+  "Build and record a complete lighting look in one call: clears programmer, selects heads or group, optionally includes colour/position/beam palettes, sets intensity and any raw attribute overrides, records the cue, then clears programmer. Use run_sequence for multi-cue sessions.",
   {
-    heads_start: z.number().int().min(1).max(6145).describe("First head number"),
+    group: z.number().int().min(1).max(200).optional().describe("Group number — preferred over heads_start/end when a group exists"),
+    heads_start: z.number().int().min(1).max(6145).optional().describe("First head number (used when no group is specified)"),
     heads_end: z.number().int().min(1).max(6145).optional().describe("Last head number (omit for single head)"),
+    colour_palette_id: z.number().int().min(1).max(1024).optional().describe("Colour palette to include"),
+    position_palette_id: z.number().int().min(1).max(1024).optional().describe("Position palette to include"),
+    beam_palette_id: z.number().int().min(1).max(1024).optional().describe("Beam palette to include"),
     intensity: z.number().int().min(0).max(100).describe("Intensity level 0–100"),
     attributes: z.record(z.string(), z.number().int()).optional().describe(
-      "Map of attribute number (as string key) to value, e.g. {\"16\": 0, \"17\": 0, \"18\": 255}"
+      "Hard-coded attribute overrides beyond palettes — map of attribute number (string key) to value"
     ),
     cue_id: z.number().int().min(1).max(5000).describe("Cue ID to record into"),
   },
-  async ({ heads_start, heads_end, intensity, attributes, cue_id }) => {
+  async ({ group, heads_start, heads_end, colour_palette_id, position_palette_id, beam_palette_id, intensity, attributes, cue_id }) => {
     const cmds: string[] = [];
 
-    // Select heads
-    cmds.push(heads_end !== undefined ? `1,${heads_start},${heads_end}H` : `1,${heads_start}H`);
-    // Set intensity
+    cmds.push("9H"); // clear programmer first
+    if (group !== undefined) {
+      cmds.push(`4,${group}H`);
+    } else if (heads_start !== undefined) {
+      cmds.push(heads_end !== undefined ? `1,${heads_start},${heads_end}H` : `1,${heads_start}H`);
+    }
+    if (colour_palette_id !== undefined) cmds.push(`11,${colour_palette_id}H`);
+    if (position_palette_id !== undefined) cmds.push(`10,${position_palette_id}H`);
+    if (beam_palette_id !== undefined) cmds.push(`12,${beam_palette_id}H`);
     cmds.push(`5,${intensity}H`);
-    // Set each attribute
     if (attributes) {
-      for (const [attrStr, value] of Object.entries(attributes)) {
-        cmds.push(`6,${attrStr},${value}H`);
+      for (const [attr, value] of Object.entries(attributes)) {
+        cmds.push(`6,${attr},${value}H`);
       }
     }
-    // Record cue
     cmds.push(`23,${cue_id}H`);
-    // Clear programmer
-    cmds.push("9H");
+    cmds.push("9H"); // clear programmer after
 
     await sendCommands(cmds, config);
 
-    const headRange = heads_end !== undefined ? `${heads_start}–${heads_end}` : `${heads_start}`;
+    const selectionDesc = group !== undefined
+      ? `group ${group}`
+      : heads_end !== undefined ? `heads ${heads_start}–${heads_end}` : `head ${heads_start}`;
+    const palettes = [
+      colour_palette_id !== undefined ? `colour ${colour_palette_id}` : null,
+      position_palette_id !== undefined ? `position ${position_palette_id}` : null,
+      beam_palette_id !== undefined ? `beam ${beam_palette_id}` : null,
+    ].filter(Boolean);
     const attrCount = attributes ? Object.keys(attributes).length : 0;
+
     return ok(
-      `Programmed look: heads ${headRange}, intensity ${intensity}%, ${attrCount} attribute(s) set → recorded as cue ${cue_id}, programmer cleared`
+      [
+        `Programmed look: ${selectionDesc}, intensity ${intensity}%`,
+        palettes.length > 0 ? `palettes: ${palettes.join(", ")}` : null,
+        attrCount > 0 ? `${attrCount} raw attribute override(s)` : null,
+        `→ recorded as cue ${cue_id}, programmer cleared`,
+      ].filter(Boolean).join("; ")
     );
   }
 );
@@ -561,6 +582,37 @@ server.resource(
       text: formatRegistry(loadRegistry()),
     }],
   })
+);
+
+server.tool(
+  "run_sequence",
+  [
+    "Execute a sequence of MagicQ operations in a single tool call.",
+    "Use this instead of chaining individual tool calls — the entire sequence is planned upfront and executed with correct inter-command delays, eliminating LLM round trips between steps.",
+    "",
+    "Each step is an object with an \"op\" field plus operation-specific params:",
+    "  Programmer: clear_programmer | select_group | select_heads | deselect_all_heads",
+    "              include_colour_palette | include_position_palette | include_beam_palette",
+    "              set_intensity | set_attribute",
+    "              record_cue | record_colour_palette | record_position_palette | record_beam_palette",
+    "  Playback:   activate_playback | release_playback | go_playback | stop_playback",
+    "              set_playback_level | jump_to_cue | change_page",
+    "  Fixture:    locate_heads | lamp_on | lamp_off | reset_heads",
+    "  Control:    delay (extra wait in ms) | raw (raw CREP command string)",
+    "",
+    "The configured inter-command delay (default 75ms) is applied between steps automatically.",
+    "Palette registry is updated for record_*_palette steps.",
+    "",
+    "Example — program a cue using a colour palette:",
+    "[{\"op\":\"clear_programmer\"},{\"op\":\"select_group\",\"group\":1},",
+    "{\"op\":\"include_colour_palette\",\"palette_id\":3},{\"op\":\"set_intensity\",\"level\":80},",
+    "{\"op\":\"record_cue\",\"cue_id\":10},{\"op\":\"clear_programmer\"}]",
+  ].join("\n"),
+  { steps: z.array(StepSchema).min(1).describe("Ordered list of steps to execute") },
+  async ({ steps }) => {
+    const log = await executeSequence(steps, config);
+    return ok(`Executed ${log.length} step(s):\n${log.map((l, i) => `  ${i + 1}. ${l}`).join("\n")}`);
+  }
 );
 
 server.tool(

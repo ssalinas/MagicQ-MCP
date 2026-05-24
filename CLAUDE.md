@@ -81,6 +81,22 @@ position, 2, Stage Right
 beam, 1, Open White
 ```
 
+## Tool Selection — Reducing Round Trips
+
+Prefer tools that express the full intent in one call:
+
+| Situation | Use |
+|-----------|-----|
+| Single cue with optional palettes | `program_look` |
+| Multi-step or multi-cue programming | `run_sequence` |
+| Single playback action | individual playback tools |
+| Multi-playback sequence or show transition | `run_sequence` |
+| Anything unusual | `run_sequence` with `raw` steps |
+
+**Do not make individual tool calls for each programmer step** (clear → select → include → intensity → record → clear). That costs 6 LLM round trips. Use `run_sequence` and express the entire plan in one call.
+
+`run_sequence` supports all ops: `clear_programmer`, `select_group`, `select_heads`, `deselect_all_heads`, `include_colour_palette`, `include_position_palette`, `include_beam_palette`, `set_intensity`, `set_attribute`, `record_cue`, `record_colour_palette`, `record_position_palette`, `record_beam_palette`, `activate_playback`, `release_playback`, `go_playback`, `stop_playback`, `set_playback_level`, `jump_to_cue`, `change_page`, `locate_heads`, `lamp_on`, `lamp_off`, `reset_heads`, `delay`, `raw`.
+
 ## Tools at a Glance
 
 | Category | Key Tools |

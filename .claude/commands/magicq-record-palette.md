@@ -29,59 +29,39 @@ For position palettes: get pan and tilt values (0–255 for 8-bit, or 0–65535 
 
 ## Workflow
 
-Execute **in order**:
+Use `run_sequence` to record a palette in a single tool call:
 
-### 1. Clear the programmer
-```
-clear_programmer
-```
-
-### 2. Select heads
-```
-select_group(group)
-```
-or
-```
-select_heads(start, end)
-```
-
-### 3. Set the attributes you want to capture
-
-**For a colour palette** — set the colour attributes:
-```
-set_attribute(16, cyan_value)    # Cyan   (0–255)
-set_attribute(17, magenta_value) # Magenta (0–255)
-set_attribute(18, yellow_value)  # Yellow  (0–255)
-```
-For fixtures with discrete colour wheels, use Col1 (attr 6) or Col2 (attr 7) instead.
-
-**For a position palette** — set pan/tilt (and optionally focus/zoom):
-```
-set_attribute(4, pan_value)   # Pan  (0–255)
-set_attribute(5, tilt_value)  # Tilt (0–255)
+**Colour palette example (deep blue):**
+```json
+[
+  { "op": "clear_programmer" },
+  { "op": "select_group", "group": 1 },
+  { "op": "set_attribute", "attr": 16, "value": 255 },
+  { "op": "set_attribute", "attr": 17, "value": 128 },
+  { "op": "set_attribute", "attr": 18, "value": 0 },
+  { "op": "record_colour_palette", "palette_id": 5, "name": "Deep Blue" },
+  { "op": "clear_programmer" }
+]
 ```
 
-**For a beam palette** — set gobo, iris, shutter, etc.:
-```
-set_attribute(8, gobo_value)   # Gobo1
-set_attribute(3, iris_value)   # Iris
-set_attribute(2, shutter_value) # Shutter
+**Position palette example:**
+```json
+[
+  { "op": "clear_programmer" },
+  { "op": "select_group", "group": 1 },
+  { "op": "set_attribute", "attr": 4, "value": 128 },
+  { "op": "set_attribute", "attr": 5, "value": 96 },
+  { "op": "record_position_palette", "palette_id": 2, "name": "Centre Stage" },
+  { "op": "clear_programmer" }
+]
 ```
 
-### 4. Record the palette — always pass a name
-```
-record_colour_palette(palette_id, name)
-# or
-record_position_palette(palette_id, name)
-# or
-record_beam_palette(palette_id, name)
-```
-The `name` is saved to `palettes.json` automatically. Never skip it — unnamed palettes make future sessions harder.
+Attribute reference for common palette types:
+- Colour: Cyan=16, Magenta=17, Yellow=18; discrete wheel: Col1=6, Col2=7
+- Position: Pan=4, Tilt=5, Focus=12, Zoom=13
+- Beam: Gobo1=8, Iris=3, Shutter=2, Frost1=32
 
-### 5. Clear the programmer
-```
-clear_programmer
-```
+Always pass `name` to `record_*_palette` — it is saved to `palettes.json` automatically.
 
 ## After recording
 

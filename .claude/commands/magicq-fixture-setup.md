@@ -10,42 +10,46 @@ Fixture preparation commands operate through the **programmer**. Always clear th
 
 ## Operations
 
+Use `run_sequence` to execute fixture preparation in a single tool call.
+
 ### Locate heads (reset to default)
-Sets all attributes to their default "locate" values — full intensity, open white, centre pan/tilt. Useful to start programming from a known state.
-
-```
-clear_programmer
-select_group(group)         # or select_heads(start, end)
-locate_heads()
-clear_programmer
-```
-
-### Lamp on (strike the arc lamp)
-Only relevant for fixtures with discharge arc lamps (movers). LED fixtures ignore this.
-
-```
-clear_programmer
-select_group(group)
-lamp_on()
-clear_programmer
+```json
+[
+  { "op": "clear_programmer" },
+  { "op": "select_group", "group": 1 },
+  { "op": "locate_heads" },
+  { "op": "clear_programmer" }
+]
 ```
 
-### Lamp off (douse the arc lamp)
+### Lamp on
+```json
+[
+  { "op": "clear_programmer" },
+  { "op": "select_group", "group": 1 },
+  { "op": "lamp_on" },
+  { "op": "clear_programmer" }
+]
 ```
-clear_programmer
-select_group(group)
-lamp_off()
-clear_programmer
+
+### Lamp off
+```json
+[
+  { "op": "clear_programmer" },
+  { "op": "select_group", "group": 1 },
+  { "op": "lamp_off" },
+  { "op": "clear_programmer" }
+]
 ```
 
 ### Reset fixtures
-Sends a reset command to the fixture — useful if a fixture has glitched or stuck.
-
-```
-clear_programmer
-select_group(group)
-reset_heads()
-clear_programmer
+```json
+[
+  { "op": "clear_programmer" },
+  { "op": "select_group", "group": 1 },
+  { "op": "reset_heads" },
+  { "op": "clear_programmer" }
+]
 ```
 
 ## Notes

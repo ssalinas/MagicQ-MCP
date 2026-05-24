@@ -18,55 +18,29 @@ If the user gives you raw colour/position values, ask whether a colour or positi
 
 ## Workflow
 
-Execute these steps **in order**. Do not skip or reorder them.
+Use `run_sequence` to execute the entire cue programming workflow in a single tool call. Do not make individual tool calls for each step — that wastes LLM round trips.
 
-### 1. Clear the programmer
-```
-clear_programmer
-```
-Always start clean, even if you believe the programmer is already empty.
+Build the steps array in this order:
 
-### 2. Select heads
-Prefer group selection:
-```
-select_group(group)
-```
-If no group is configured, select by range:
-```
-select_heads(start, end)
-```
-Heads must be selected before any attribute commands.
-
-### 3. Include palettes (if using palette references)
-If colour/position palettes exist for this look, include them now:
-```
-include_colour_palette(palette_id)
-include_position_palette(palette_id)
-```
-Pause ~100ms between includes (the server handles this automatically).
-
-### 4. Set intensity
-```
-set_intensity(level)
+```json
+[
+  { "op": "clear_programmer" },
+  { "op": "select_group", "group": 1 },
+  { "op": "include_colour_palette", "palette_id": 3 },
+  { "op": "include_position_palette", "palette_id": 1 },
+  { "op": "set_intensity", "level": 80 },
+  { "op": "record_cue", "cue_id": 10 },
+  { "op": "clear_programmer" }
+]
 ```
 
-### 5. Set any additional hard-coded attributes
-Only if values are NOT covered by an included palette:
-```
-set_attribute(attr, value)
-```
-Call `attribute_list` if you need to look up an attribute number.
+Steps that may be omitted if not needed:
+- `include_colour_palette` — only if a colour palette is being applied
+- `include_position_palette` — only if a position palette is being applied
+- `include_beam_palette` — only if a beam palette is being applied
+- `set_attribute` entries — only for hard-coded values not covered by palettes
 
-### 6. Record the cue
-```
-record_cue(cue_id)
-```
-
-### 7. Clear the programmer
-```
-clear_programmer
-```
-Never skip this. Leaving values in the programmer overrides live playback output.
+Alternatively, for a single straightforward cue with no unusual steps, `program_look` covers the same workflow with a flat parameter set and no sequence to construct.
 
 ## Confirming success
 

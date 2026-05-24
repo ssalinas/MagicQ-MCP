@@ -20,49 +20,35 @@ If the user doesn't have palettes set up yet, redirect to `/magicq-record-palett
 
 ## Workflow
 
-### 1. Clear the programmer
+Use `run_sequence` to build a look from palettes in a single tool call.
+
+For a **single cue**, `program_look` is the simplest option — pass the palette IDs directly:
 ```
-clear_programmer
+program_look(group=1, colour_palette_id=3, position_palette_id=1, intensity=80, cue_id=10)
 ```
 
-### 2. Select heads
-```
-select_group(group)
+For **multiple cues** or more complex sequences, use `run_sequence`:
+
+```json
+[
+  { "op": "clear_programmer" },
+  { "op": "select_group", "group": 1 },
+  { "op": "include_colour_palette", "palette_id": 3 },
+  { "op": "include_position_palette", "palette_id": 1 },
+  { "op": "set_intensity", "level": 80 },
+  { "op": "record_cue", "cue_id": 10 },
+  { "op": "clear_programmer" },
+
+  { "op": "select_group", "group": 1 },
+  { "op": "include_colour_palette", "palette_id": 7 },
+  { "op": "include_position_palette", "palette_id": 2 },
+  { "op": "set_intensity", "level": 60 },
+  { "op": "record_cue", "cue_id": 11 },
+  { "op": "clear_programmer" }
+]
 ```
 
-### 3. Include palettes
-Include each palette type needed. The order here matters — include palettes **before** setting intensity:
-```
-include_colour_palette(colour_palette_id)
-include_position_palette(position_palette_id)
-```
-Only include beam palette if beam attributes need to be set:
-```
-include_beam_palette(beam_palette_id)
-```
-
-### 4. Set intensity
-```
-set_intensity(level)
-```
-Intensity is set after palette includes because `include_*` calls can overwrite intensity if the palette contains intensity data.
-
-### 5. Hard-code any per-cue overrides (optional)
-If this specific cue needs an attribute value that differs from any palette:
-```
-set_attribute(attr, value)
-```
-Keep overrides minimal — the goal is to rely on palettes as much as possible.
-
-### 6. Record the cue
-```
-record_cue(cue_id)
-```
-
-### 7. Clear the programmer
-```
-clear_programmer
-```
+Note: `clear_programmer` at the start of a subsequent cue within the same sequence is redundant (the prior clear already did it), but including it improves safety and readability.
 
 ## Confirming success
 
