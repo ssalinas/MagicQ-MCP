@@ -1,0 +1,647 @@
+#!/usr/bin/env node
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { getConfig, sendCommand, sendCommands } from "./transport.js";
+import { ATTR } from "./attributes.js";
+import {
+  loadRegistry,
+  upsertPalette,
+  formatRegistry,
+  defaultName,
+  type PaletteType,
+} from "./palette-registry.js";
+import { importCsv } from "./csv-import.js";
+import { StepSchema, executeSequence } from "./sequence.js";
+
+const config = getConfig();
+const server = new McpServer({ name: "magicq", version: "0.1.0" });
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function ok(msg: string) {
+  return { content: [{ type: "text" as const, text: msg }] };
+}
+
+// ── Playback control tools ────────────────────────────────────────────────────
+
+server.tool(
+  "activate_playback",
+  "Activate a playback (fader goes live). Optionally set the level (0–100) at the same time.",
+  {
+    playback: z.number().int().min(1).max(202).describe("Playback number (1–202; 1–10 on PC/Mac without hardware)"),
+    level: z.number().int().min(0).max(100).optional().describe("Fader level 0–100 (optional)"),
+  },
+  async ({ playback, level }) => {
+    if (level !== undefined) {
+      await sendCommands([`${playback}A`, `${playback},${level}L`], config);
+    } else {
+      await sendCommand(`${playback}A`, config);
+    }
+    return ok(`Activated PB${playback}${level !== undefined ? ` at ${level}%` : ""}`);
+  }
+);
+
+server.tool(
+  "release_playback",
+  "Release (deactivate) a playback.",
+  {
+    playback: z.number().int().min(1).max(202).describe("Playback number"),
+  },
+  async ({ playback }) => {
+    await sendCommand(`${playback}R`, config);
+    return ok(`Released PB${playback}`);
+  }
+);
+
+server.tool(
+  "go_playback",
+  "Send a Go (step forward) to a playback, advancing to the next cue in the stack.",
+  {
+    playback: z.number().int().min(1).max(202).describe("Playback number"),
+  },
+  async ({ playback }) => {
+    await sendCommand(`${playback}G`, config);
+    return ok(`Go on PB${playback}`);
+  }
+);
+
+server.tool(
+  "stop_playback",
+  "Stop/go-back on a playback.",
+  {
+    playback: z.number().int().min(1).max(202).describe("Playback number"),
+  },
+  async ({ playback }) => {
+    await sendCommand(`${playback}S`, config);
+    return ok(`Stop on PB${playback}`);
+  }
+);
+
+server.tool(
+  "set_playback_level",
+  "Set the fader level of a playback (0–100).",
+  {
+    playback: z.number().int().min(1).max(202).describe("Playback number"),
+    level: z.number().int().min(0).max(100).describe("Fader level 0–100"),
+  },
+  async ({ playback, level }) => {
+    await sendCommand(`${playback},${level}L`, config);
+    return ok(`PB${playback} level → ${level}%`);
+  }
+);
+
+server.tool(
+  "jump_to_cue",
+  "Jump to a specific cue on a playback. cue_id is the integer part, cue_id_dec is the decimal part (e.g. cue 2.5 → cue_id=2, cue_id_dec=50).",
+  {
+    playback: z.number().int().min(1).max(202).describe("Playback number"),
+    cue_id: z.number().int().min(1).max(65536).describe("Cue ID integer part"),
+    cue_id_dec: z.number().int().min(0).max(99).default(0).describe("Cue ID decimal part (0 for whole cues)"),
+  },
+  async ({ playback, cue_id, cue_id_dec }) => {
+    await sendCommand(`${playback},${cue_id},${cue_id_dec}J`, config);
+    return ok(`PB${playback} jumped to cue ${cue_id}.${cue_id_dec.toString().padStart(2, "0")}`);
+  }
+);
+
+server.tool(
+  "change_page",
+  "Change the active playback page on the console.",
+  {
+    page: z.number().int().min(1).describe("Page number"),
+  },
+  async ({ page }) => {
+    await sendCommand(`${page}P`, config);
+    return ok(`Changed to page ${page}`);
+  }
+);
+
+server.tool(
+  "test_playback",
+  "Activate a playback at 100% (test mode).",
+  {
+    playback: z.number().int().min(1).max(202).describe("Playback number"),
+  },
+  async ({ playback }) => {
+    await sendCommand(`${playback}T`, config);
+    return ok(`Testing PB${playback} at 100%`);
+  }
+);
+
+server.tool(
+  "untest_playback",
+  "Release a playback from test mode (back to 0%).",
+  {
+    playback: z.number().int().min(1).max(202).describe("Playback number"),
+  },
+  async ({ playback }) => {
+    await sendCommand(`${playback}U`, config);
+    return ok(`Un-tested PB${playback}`);
+  }
+);
+
+// ── Direct DMX ───────────────────────────────────────────────────────────────
+
+server.tool(
+  "set_channel",
+  "Set a DMX channel intensity directly (bypasses programmer).",
+  {
+    channel: z.number().int().min(1).max(32768).describe("DMX channel number"),
+    level: z.number().int().min(0).max(100).describe("Level 0–100"),
+  },
+  async ({ channel, level }) => {
+    await sendCommand(`${channel},${level}I`, config);
+    return ok(`DMX channel ${channel} → ${level}%`);
+  }
+);
+
+// ── Programmer tools ──────────────────────────────────────────────────────────
+
+server.tool(
+  "select_heads",
+  "Select one or a range of fixture heads in the programmer.",
+  {
+    start: z.number().int().min(1).max(6145).describe("First head number"),
+    end: z.number().int().min(1).max(6145).optional().describe("Last head number (omit for single head)"),
+  },
+  async ({ start, end }) => {
+    const cmd = end !== undefined ? `1,${start},${end}H` : `1,${start}H`;
+    await sendCommand(cmd, config);
+    return ok(`Selected head${end !== undefined ? `s ${start}–${end}` : ` ${start}`}`);
+  }
+);
+
+server.tool(
+  "deselect_heads",
+  "Deselect one or a range of fixture heads.",
+  {
+    start: z.number().int().min(1).max(6145).describe("First head number"),
+    end: z.number().int().min(1).max(6145).optional().describe("Last head number (omit for single head)"),
+  },
+  async ({ start, end }) => {
+    const cmd = end !== undefined ? `2,${start},${end}H` : `2,${start}H`;
+    await sendCommand(cmd, config);
+    return ok(`Deselected head${end !== undefined ? `s ${start}–${end}` : ` ${start}`}`);
+  }
+);
+
+server.tool(
+  "deselect_all_heads",
+  "Deselect all fixture heads.",
+  {},
+  async () => {
+    await sendCommand("3H", config);
+    return ok("Deselected all heads");
+  }
+);
+
+server.tool(
+  "select_group",
+  "Select a fixture group by number.",
+  {
+    group: z.number().int().min(1).max(200).describe("Group number (1–200)"),
+  },
+  async ({ group }) => {
+    await sendCommand(`4,${group}H`, config);
+    return ok(`Selected group ${group}`);
+  }
+);
+
+server.tool(
+  "set_intensity",
+  "Set the intensity of currently selected heads.",
+  {
+    level: z.number().int().min(0).max(100).describe("Intensity level 0–100"),
+    fade_time: z.number().int().min(0).optional().describe("Fade time in seconds (optional)"),
+  },
+  async ({ level, fade_time }) => {
+    const cmd = fade_time !== undefined ? `5,${level},${fade_time}H` : `5,${level}H`;
+    await sendCommand(cmd, config);
+    return ok(`Intensity → ${level}%${fade_time !== undefined ? ` over ${fade_time}s` : ""}`);
+  }
+);
+
+server.tool(
+  "set_attribute",
+  "Set an attribute value on currently selected heads. Use the attribute number (see attribute_list tool for reference).",
+  {
+    attr: z.number().int().min(0).max(51).describe("Attribute number"),
+    value: z.number().int().min(0).max(65535).describe("Attribute value"),
+    fade_time: z.number().int().min(0).optional().describe("Fade time in seconds (optional)"),
+  },
+  async ({ attr, value, fade_time }) => {
+    const cmd = fade_time !== undefined ? `6,${attr},${value},${fade_time}H` : `6,${attr},${value}H`;
+    await sendCommand(cmd, config);
+    return ok(`Attribute ${attr} → ${value}${fade_time !== undefined ? ` over ${fade_time}s` : ""}`);
+  }
+);
+
+server.tool(
+  "increment_attribute",
+  "Increment an attribute on currently selected heads.",
+  {
+    attr: z.number().int().min(0).max(51).describe("Attribute number"),
+    value: z.number().int().min(0).max(65535).describe("Amount to increment"),
+    sixteen_bit: z.boolean().default(false).describe("Use 16-bit resolution (default false = 8-bit)"),
+  },
+  async ({ attr, value, sixteen_bit }) => {
+    await sendCommand(`7,${attr},${value},${sixteen_bit ? 1 : 0}H`, config);
+    return ok(`Attribute ${attr} incremented by ${value}`);
+  }
+);
+
+server.tool(
+  "decrement_attribute",
+  "Decrement an attribute on currently selected heads.",
+  {
+    attr: z.number().int().min(0).max(51).describe("Attribute number"),
+    value: z.number().int().min(0).max(65535).describe("Amount to decrement"),
+    sixteen_bit: z.boolean().default(false).describe("Use 16-bit resolution (default false = 8-bit)"),
+  },
+  async ({ attr, value, sixteen_bit }) => {
+    await sendCommand(`8,${attr},${value},${sixteen_bit ? 1 : 0}H`, config);
+    return ok(`Attribute ${attr} decremented by ${value}`);
+  }
+);
+
+server.tool(
+  "clear_programmer",
+  "Clear the programmer (remove all unsaved changes from the edit buffer). Always call this before and after building a look.",
+  {},
+  async () => {
+    await sendCommand("9H", config);
+    return ok("Programmer cleared");
+  }
+);
+
+server.tool(
+  "include_position_palette",
+  "Include a position palette into the programmer.",
+  {
+    palette_id: z.number().int().min(1).max(1024).describe("Position palette ID"),
+  },
+  async ({ palette_id }) => {
+    await sendCommand(`10,${palette_id}H`, config);
+    return ok(`Included position palette ${palette_id}`);
+  }
+);
+
+server.tool(
+  "include_colour_palette",
+  "Include a colour palette into the programmer.",
+  {
+    palette_id: z.number().int().min(1).max(1024).describe("Colour palette ID"),
+  },
+  async ({ palette_id }) => {
+    await sendCommand(`11,${palette_id}H`, config);
+    return ok(`Included colour palette ${palette_id}`);
+  }
+);
+
+server.tool(
+  "include_beam_palette",
+  "Include a beam palette into the programmer.",
+  {
+    palette_id: z.number().int().min(1).max(1024).describe("Beam palette ID"),
+  },
+  async ({ palette_id }) => {
+    await sendCommand(`12,${palette_id}H`, config);
+    return ok(`Included beam palette ${palette_id}`);
+  }
+);
+
+server.tool(
+  "include_cue",
+  "Include a cue into the programmer (load its values into the edit buffer).",
+  {
+    cue_id: z.number().int().min(1).max(5000).describe("Cue ID"),
+  },
+  async ({ cue_id }) => {
+    await sendCommand(`13,${cue_id}H`, config);
+    return ok(`Included cue ${cue_id} into programmer`);
+  }
+);
+
+server.tool(
+  "update",
+  "Save programmer values back to their source cues/palettes (update in place).",
+  {},
+  async () => {
+    await sendCommand("19H", config);
+    return ok("Updated — programmer values saved back to source");
+  }
+);
+
+server.tool(
+  "record_position_palette",
+  "Record the current programmer values as a position palette. Providing a name saves it to the local registry so Claude can reference it by name in future sessions.",
+  {
+    palette_id: z.number().int().min(1).max(1024).describe("Position palette ID to record into"),
+    name: z.string().optional().describe("Human-readable name for this palette (e.g. \"Centre Stage\")"),
+  },
+  async ({ palette_id, name }) => {
+    await sendCommand(`20,${palette_id}H`, config);
+    const resolvedName = name ?? defaultName("position", palette_id);
+    upsertPalette("position", palette_id, resolvedName);
+    return ok(`Recorded position palette ${palette_id} ("${resolvedName}")`);
+  }
+);
+
+server.tool(
+  "record_colour_palette",
+  "Record the current programmer values as a colour palette. Providing a name saves it to the local registry so Claude can reference it by name in future sessions.",
+  {
+    palette_id: z.number().int().min(1).max(1024).describe("Colour palette ID to record into"),
+    name: z.string().optional().describe("Human-readable name for this palette (e.g. \"Deep Blue\")"),
+  },
+  async ({ palette_id, name }) => {
+    await sendCommand(`21,${palette_id}H`, config);
+    const resolvedName = name ?? defaultName("colour", palette_id);
+    upsertPalette("colour", palette_id, resolvedName);
+    return ok(`Recorded colour palette ${palette_id} ("${resolvedName}")`);
+  }
+);
+
+server.tool(
+  "record_beam_palette",
+  "Record the current programmer values as a beam palette. Providing a name saves it to the local registry so Claude can reference it by name in future sessions.",
+  {
+    palette_id: z.number().int().min(1).max(1024).describe("Beam palette ID to record into"),
+    name: z.string().optional().describe("Human-readable name for this palette (e.g. \"Open White\")"),
+  },
+  async ({ palette_id, name }) => {
+    await sendCommand(`22,${palette_id}H`, config);
+    const resolvedName = name ?? defaultName("beam", palette_id);
+    upsertPalette("beam", palette_id, resolvedName);
+    return ok(`Recorded beam palette ${palette_id} ("${resolvedName}")`);
+  }
+);
+
+server.tool(
+  "record_cue",
+  "Record the current programmer contents as a cue. The cue stack must already exist on the console.",
+  {
+    cue_id: z.number().int().min(1).max(5000).describe("Cue ID to record into"),
+  },
+  async ({ cue_id }) => {
+    await sendCommand(`23,${cue_id}H`, config);
+    return ok(`Recorded cue ${cue_id}`);
+  }
+);
+
+server.tool(
+  "next_head",
+  "Select the next head (cycle through selected heads).",
+  {},
+  async () => {
+    await sendCommand("30H", config);
+    return ok("Next head selected");
+  }
+);
+
+server.tool(
+  "prev_head",
+  "Select the previous head (cycle through selected heads).",
+  {},
+  async () => {
+    await sendCommand("31H", config);
+    return ok("Previous head selected");
+  }
+);
+
+server.tool(
+  "all_heads",
+  "Select all heads (within current selection).",
+  {},
+  async () => {
+    await sendCommand("32H", config);
+    return ok("All heads selected");
+  }
+);
+
+server.tool(
+  "locate_heads",
+  "Locate selected heads (reset to default position/attributes).",
+  {},
+  async () => {
+    await sendCommand("40H", config);
+    return ok("Heads located");
+  }
+);
+
+server.tool(
+  "lamp_on",
+  "Strike the lamp on selected heads.",
+  {},
+  async () => {
+    await sendCommand("41H", config);
+    return ok("Lamp on sent to selected heads");
+  }
+);
+
+server.tool(
+  "lamp_off",
+  "Douse the lamp on selected heads.",
+  {},
+  async () => {
+    await sendCommand("42H", config);
+    return ok("Lamp off sent to selected heads");
+  }
+);
+
+server.tool(
+  "reset_heads",
+  "Reset selected heads.",
+  {},
+  async () => {
+    await sendCommand("43H", config);
+    return ok("Reset sent to selected heads");
+  }
+);
+
+// ── High-level composite tools ────────────────────────────────────────────────
+
+server.tool(
+  "program_look",
+  "Build and record a complete lighting look in one call: clears programmer, selects heads or group, optionally includes colour/position/beam palettes, sets intensity and any raw attribute overrides, records the cue, then clears programmer. Use run_sequence for multi-cue sessions.",
+  {
+    group: z.number().int().min(1).max(200).optional().describe("Group number — preferred over heads_start/end when a group exists"),
+    heads_start: z.number().int().min(1).max(6145).optional().describe("First head number (used when no group is specified)"),
+    heads_end: z.number().int().min(1).max(6145).optional().describe("Last head number (omit for single head)"),
+    colour_palette_id: z.number().int().min(1).max(1024).optional().describe("Colour palette to include"),
+    position_palette_id: z.number().int().min(1).max(1024).optional().describe("Position palette to include"),
+    beam_palette_id: z.number().int().min(1).max(1024).optional().describe("Beam palette to include"),
+    intensity: z.number().int().min(0).max(100).describe("Intensity level 0–100"),
+    attributes: z.record(z.string(), z.number().int()).optional().describe(
+      "Hard-coded attribute overrides beyond palettes — map of attribute number (string key) to value"
+    ),
+    cue_id: z.number().int().min(1).max(5000).describe("Cue ID to record into"),
+  },
+  async ({ group, heads_start, heads_end, colour_palette_id, position_palette_id, beam_palette_id, intensity, attributes, cue_id }) => {
+    const cmds: string[] = [];
+
+    cmds.push("9H"); // clear programmer first
+    if (group !== undefined) {
+      cmds.push(`4,${group}H`);
+    } else if (heads_start !== undefined) {
+      cmds.push(heads_end !== undefined ? `1,${heads_start},${heads_end}H` : `1,${heads_start}H`);
+    }
+    if (colour_palette_id !== undefined) cmds.push(`11,${colour_palette_id}H`);
+    if (position_palette_id !== undefined) cmds.push(`10,${position_palette_id}H`);
+    if (beam_palette_id !== undefined) cmds.push(`12,${beam_palette_id}H`);
+    cmds.push(`5,${intensity}H`);
+    if (attributes) {
+      for (const [attr, value] of Object.entries(attributes)) {
+        cmds.push(`6,${attr},${value}H`);
+      }
+    }
+    cmds.push(`23,${cue_id}H`);
+    cmds.push("9H"); // clear programmer after
+
+    await sendCommands(cmds, config);
+
+    const selectionDesc = group !== undefined
+      ? `group ${group}`
+      : heads_end !== undefined ? `heads ${heads_start}–${heads_end}` : `head ${heads_start}`;
+    const palettes = [
+      colour_palette_id !== undefined ? `colour ${colour_palette_id}` : null,
+      position_palette_id !== undefined ? `position ${position_palette_id}` : null,
+      beam_palette_id !== undefined ? `beam ${beam_palette_id}` : null,
+    ].filter(Boolean);
+    const attrCount = attributes ? Object.keys(attributes).length : 0;
+
+    return ok(
+      [
+        `Programmed look: ${selectionDesc}, intensity ${intensity}%`,
+        palettes.length > 0 ? `palettes: ${palettes.join(", ")}` : null,
+        attrCount > 0 ? `${attrCount} raw attribute override(s)` : null,
+        `→ recorded as cue ${cue_id}, programmer cleared`,
+      ].filter(Boolean).join("; ")
+    );
+  }
+);
+
+// ── Palette registry tools ────────────────────────────────────────────────────
+
+server.tool(
+  "list_palettes",
+  "List all palettes in the local registry (colour, position, and beam). Use this at the start of a programming session to understand what palettes exist and which IDs to reference.",
+  {},
+  async () => {
+    const registry = loadRegistry();
+    return ok(formatRegistry(registry));
+  }
+);
+
+server.tool(
+  "declare_palette",
+  "Register a palette that already exists on the console into the local registry. Use this for palettes created directly on the console (not through this server). Does not send any command to MagicQ.",
+  {
+    type: z.enum(["colour", "position", "beam"]).describe("Palette type"),
+    palette_id: z.number().int().min(1).max(1024).describe("Palette ID on the console"),
+    name: z.string().min(1).describe("Human-readable name for this palette"),
+  },
+  async ({ type, palette_id, name }) => {
+    upsertPalette(type as PaletteType, palette_id, name);
+    return ok(`Registered ${type} palette ${palette_id} as "${name}"`);
+  }
+);
+
+server.tool(
+  "import_palettes_csv",
+  [
+    "Import palette names from a CSV file into the local registry.",
+    "Expected format (one palette per line): type,id,name",
+    "  type: colour | color | c | position | p | beam | b  (case-insensitive)",
+    "  id:   palette number (1–1024)",
+    "  name: human-readable label (optional — defaults to 'Colour N' etc.)",
+    "Lines starting with # and blank lines are ignored.",
+    "MagicQ raw attribute-value exports (where the third column is a number) are accepted but use a default name.",
+  ].join("\n"),
+  {
+    file_path: z.string().describe("Absolute path to the CSV file"),
+  },
+  async ({ file_path }) => {
+    const result = importCsv(file_path);
+    const parts = [`Imported ${result.imported} palette(s)`];
+    if (result.skipped > 0) parts.push(`skipped ${result.skipped} unrecognised row(s)`);
+    if (result.errors.length > 0) parts.push(`errors:\n${result.errors.join("\n")}`);
+    return ok(parts.join("; "));
+  }
+);
+
+server.resource(
+  "palette-registry",
+  "palettes://registry",
+  { description: "All registered MagicQ palettes (colour, position, beam) with their IDs and names.", mimeType: "text/plain" },
+  async (uri) => ({
+    contents: [{
+      uri: uri.toString(),
+      mimeType: "text/plain",
+      text: formatRegistry(loadRegistry()),
+    }],
+  })
+);
+
+server.tool(
+  "run_sequence",
+  [
+    "Execute a sequence of MagicQ operations in a single tool call.",
+    "Use this instead of chaining individual tool calls — the entire sequence is planned upfront and executed with correct inter-command delays, eliminating LLM round trips between steps.",
+    "",
+    "Each step is an object with an \"op\" field plus operation-specific params:",
+    "  Programmer: clear_programmer | select_group | select_heads | deselect_all_heads",
+    "              include_colour_palette | include_position_palette | include_beam_palette",
+    "              set_intensity | set_attribute",
+    "              record_cue | record_colour_palette | record_position_palette | record_beam_palette",
+    "  Playback:   activate_playback | release_playback | go_playback | stop_playback",
+    "              set_playback_level | jump_to_cue | change_page",
+    "  Fixture:    locate_heads | lamp_on | lamp_off | reset_heads",
+    "  Control:    delay (extra wait in ms) | raw (raw CREP command string)",
+    "",
+    "The configured inter-command delay (default 75ms) is applied between steps automatically.",
+    "Palette registry is updated for record_*_palette steps.",
+    "",
+    "Example — program a cue using a colour palette:",
+    "[{\"op\":\"clear_programmer\"},{\"op\":\"select_group\",\"group\":1},",
+    "{\"op\":\"include_colour_palette\",\"palette_id\":3},{\"op\":\"set_intensity\",\"level\":80},",
+    "{\"op\":\"record_cue\",\"cue_id\":10},{\"op\":\"clear_programmer\"}]",
+  ].join("\n"),
+  { steps: z.array(StepSchema).min(1).describe("Ordered list of steps to execute") },
+  async ({ steps }) => {
+    const log = await executeSequence(steps, config);
+    return ok(`Executed ${log.length} step(s):\n${log.map((l, i) => `  ${i + 1}. ${l}`).join("\n")}`);
+  }
+);
+
+server.tool(
+  "send_raw_command",
+  "Send a raw CREP command string directly to MagicQ. Use this for commands not covered by other tools.",
+  {
+    command: z.string().min(1).describe("Raw ASCII CREP command string, e.g. \"1A\" or \"23,10H\""),
+  },
+  async ({ command }) => {
+    await sendCommand(command, config);
+    return ok(`Sent: ${command}`);
+  }
+);
+
+// ── Reference resource ────────────────────────────────────────────────────────
+
+server.tool(
+  "attribute_list",
+  "Return the full list of MagicQ attribute numbers and their names for use with set_attribute, increment_attribute, etc.",
+  {},
+  async () => {
+    const rows = Object.entries(ATTR)
+      .map(([name, num]) => `  ${String(num).padStart(2, " ")}  ${name}`)
+      .join("\n");
+    return ok(`MagicQ attribute numbers:\n\n${rows}`);
+  }
+);
+
+// ── Start server ──────────────────────────────────────────────────────────────
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
