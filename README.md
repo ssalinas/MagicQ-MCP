@@ -1,0 +1,1 @@
+# MagicQ-MCP
