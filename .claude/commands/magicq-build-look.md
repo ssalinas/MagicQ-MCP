@@ -1,5 +1,9 @@
 # MagicQ: Build a Look from Palettes
 
+## Before starting — read the palette registry
+
+Read the `palettes://registry` resource or call `list_palettes` to see all available palettes with their IDs and names. Use this to select the right palette IDs for the look. Never guess at palette numbers.
+
 Use this skill when asked to compose a lighting look and record it as a cue, where colour palettes and/or position palettes already exist on the console.
 
 This is the **preferred way to program cues** on MagicQ. Cues built from palette references automatically update when palettes change — making future edits and colour/position changes instant.

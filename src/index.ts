@@ -4,6 +4,14 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { getConfig, sendCommand, sendCommands } from "./transport.js";
 import { ATTR } from "./attributes.js";
+import {
+  loadRegistry,
+  upsertPalette,
+  formatRegistry,
+  defaultName,
+  type PaletteType,
+} from "./palette-registry.js";
+import { importCsv } from "./csv-import.js";
 
 const config = getConfig();
 const server = new McpServer({ name: "magicq", version: "0.1.0" });
@@ -326,37 +334,46 @@ server.tool(
 
 server.tool(
   "record_position_palette",
-  "Record the current programmer values as a position palette.",
+  "Record the current programmer values as a position palette. Providing a name saves it to the local registry so Claude can reference it by name in future sessions.",
   {
     palette_id: z.number().int().min(1).max(1024).describe("Position palette ID to record into"),
+    name: z.string().optional().describe("Human-readable name for this palette (e.g. \"Centre Stage\")"),
   },
-  async ({ palette_id }) => {
+  async ({ palette_id, name }) => {
     await sendCommand(`20,${palette_id}H`, config);
-    return ok(`Recorded position palette ${palette_id}`);
+    const resolvedName = name ?? defaultName("position", palette_id);
+    upsertPalette("position", palette_id, resolvedName);
+    return ok(`Recorded position palette ${palette_id} ("${resolvedName}")`);
   }
 );
 
 server.tool(
   "record_colour_palette",
-  "Record the current programmer values as a colour palette.",
+  "Record the current programmer values as a colour palette. Providing a name saves it to the local registry so Claude can reference it by name in future sessions.",
   {
     palette_id: z.number().int().min(1).max(1024).describe("Colour palette ID to record into"),
+    name: z.string().optional().describe("Human-readable name for this palette (e.g. \"Deep Blue\")"),
   },
-  async ({ palette_id }) => {
+  async ({ palette_id, name }) => {
     await sendCommand(`21,${palette_id}H`, config);
-    return ok(`Recorded colour palette ${palette_id}`);
+    const resolvedName = name ?? defaultName("colour", palette_id);
+    upsertPalette("colour", palette_id, resolvedName);
+    return ok(`Recorded colour palette ${palette_id} ("${resolvedName}")`);
   }
 );
 
 server.tool(
   "record_beam_palette",
-  "Record the current programmer values as a beam palette.",
+  "Record the current programmer values as a beam palette. Providing a name saves it to the local registry so Claude can reference it by name in future sessions.",
   {
     palette_id: z.number().int().min(1).max(1024).describe("Beam palette ID to record into"),
+    name: z.string().optional().describe("Human-readable name for this palette (e.g. \"Open White\")"),
   },
-  async ({ palette_id }) => {
+  async ({ palette_id, name }) => {
     await sendCommand(`22,${palette_id}H`, config);
-    return ok(`Recorded beam palette ${palette_id}`);
+    const resolvedName = name ?? defaultName("beam", palette_id);
+    upsertPalette("beam", palette_id, resolvedName);
+    return ok(`Recorded beam palette ${palette_id} ("${resolvedName}")`);
   }
 );
 
@@ -482,6 +499,68 @@ server.tool(
       `Programmed look: heads ${headRange}, intensity ${intensity}%, ${attrCount} attribute(s) set → recorded as cue ${cue_id}, programmer cleared`
     );
   }
+);
+
+// ── Palette registry tools ────────────────────────────────────────────────────
+
+server.tool(
+  "list_palettes",
+  "List all palettes in the local registry (colour, position, and beam). Use this at the start of a programming session to understand what palettes exist and which IDs to reference.",
+  {},
+  async () => {
+    const registry = loadRegistry();
+    return ok(formatRegistry(registry));
+  }
+);
+
+server.tool(
+  "declare_palette",
+  "Register a palette that already exists on the console into the local registry. Use this for palettes created directly on the console (not through this server). Does not send any command to MagicQ.",
+  {
+    type: z.enum(["colour", "position", "beam"]).describe("Palette type"),
+    palette_id: z.number().int().min(1).max(1024).describe("Palette ID on the console"),
+    name: z.string().min(1).describe("Human-readable name for this palette"),
+  },
+  async ({ type, palette_id, name }) => {
+    upsertPalette(type as PaletteType, palette_id, name);
+    return ok(`Registered ${type} palette ${palette_id} as "${name}"`);
+  }
+);
+
+server.tool(
+  "import_palettes_csv",
+  [
+    "Import palette names from a CSV file into the local registry.",
+    "Expected format (one palette per line): type,id,name",
+    "  type: colour | color | c | position | p | beam | b  (case-insensitive)",
+    "  id:   palette number (1–1024)",
+    "  name: human-readable label (optional — defaults to 'Colour N' etc.)",
+    "Lines starting with # and blank lines are ignored.",
+    "MagicQ raw attribute-value exports (where the third column is a number) are accepted but use a default name.",
+  ].join("\n"),
+  {
+    file_path: z.string().describe("Absolute path to the CSV file"),
+  },
+  async ({ file_path }) => {
+    const result = importCsv(file_path);
+    const parts = [`Imported ${result.imported} palette(s)`];
+    if (result.skipped > 0) parts.push(`skipped ${result.skipped} unrecognised row(s)`);
+    if (result.errors.length > 0) parts.push(`errors:\n${result.errors.join("\n")}`);
+    return ok(parts.join("; "));
+  }
+);
+
+server.resource(
+  "palette-registry",
+  "palettes://registry",
+  { description: "All registered MagicQ palettes (colour, position, beam) with their IDs and names.", mimeType: "text/plain" },
+  async (uri) => ({
+    contents: [{
+      uri: uri.toString(),
+      mimeType: "text/plain",
+      text: formatRegistry(loadRegistry()),
+    }],
+  })
 );
 
 server.tool(

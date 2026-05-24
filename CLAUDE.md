@@ -58,6 +58,29 @@ MagicQ PC/Mac without a hardware wing only supports playbacks 1–10. Full conso
 
 When sending multiple chained programmer commands, the server automatically inserts a 75ms delay between them (configurable via `MAGICQ_CMD_DELAY_MS`). Don't try to work around this — MagicQ needs time to process each command.
 
+## Palette Registry
+
+The server maintains a local `palettes.json` file that tracks palette names and IDs. This is the source of truth for what palettes exist — always check it before programming.
+
+**At the start of any programming session:**
+1. Call `list_palettes` (or read the `palettes://registry` resource) to see what palettes are available
+2. Use those IDs and names when building cues — never guess at palette numbers
+
+**Keeping the registry current:**
+- `record_colour_palette`, `record_position_palette`, `record_beam_palette` — auto-update the registry when a palette is recorded through this server. Always pass a `name`.
+- `declare_palette` — register a palette that already exists on the console (created there directly, not through this server)
+- `import_palettes_csv` — bulk-import palette names from a CSV file exported from MagicQ or written manually
+
+**CSV format for import:**
+```
+# type, id, name
+colour, 1, Deep Blue
+colour, 2, Red
+position, 1, Centre Stage
+position, 2, Stage Right
+beam, 1, Open White
+```
+
 ## Tools at a Glance
 
 | Category | Key Tools |
@@ -67,5 +90,7 @@ When sending multiple chained programmer commands, the server automatically inse
 | Record | `record_cue`, `record_colour_palette`, `record_position_palette`, `record_beam_palette` |
 | Include | `include_cue`, `include_colour_palette`, `include_position_palette`, `include_beam_palette` |
 | Fixture | `locate_heads`, `lamp_on`, `lamp_off`, `reset_heads` |
+| Registry | `list_palettes`, `declare_palette`, `import_palettes_csv` |
+| Resource | `palettes://registry` (MCP resource — read at session start) |
 | Reference | `attribute_list` (prints all attribute numbers) |
 | Escape hatch | `send_raw_command` |

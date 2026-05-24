@@ -2,6 +2,10 @@
 
 Use this skill when asked to create, record, or program a cue on MagicQ.
 
+## Before starting — read the palette registry
+
+Read the `palettes://registry` resource or call `list_palettes`. This tells you which colour and position palettes are available and what their IDs are. Do not assume palette IDs — always check.
+
 ## What you need from the user before starting
 - Which heads or group to include
 - Target cue slot number (the cue stack must already exist on the console)

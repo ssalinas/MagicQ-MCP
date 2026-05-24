@@ -12,9 +12,14 @@ Palettes are the foundation of good MagicQ programming. Cues that reference pale
 | Position | Pan, Tilt, Focus, Zoom | `record_position_palette` |
 | Beam | Gobo, Rotate, Iris, Shutter, Frost | `record_beam_palette` |
 
+## Before starting — check the registry
+
+Call `list_palettes` to see which IDs are already in use. Pick an ID that isn't taken, or confirm with the user which slot to overwrite.
+
 ## What you need from the user before starting
 - Palette type (colour / position / beam)
-- Target palette slot ID (1–1024)
+- Target palette slot ID (1–1024) — confirm it's free or intentionally overwriting
+- A name for the palette (required — this is saved to the local registry)
 - Which heads or group to use
 - The attribute values to record
 
@@ -63,14 +68,15 @@ set_attribute(3, iris_value)   # Iris
 set_attribute(2, shutter_value) # Shutter
 ```
 
-### 4. Record the palette
+### 4. Record the palette — always pass a name
 ```
-record_colour_palette(palette_id)
+record_colour_palette(palette_id, name)
 # or
-record_position_palette(palette_id)
+record_position_palette(palette_id, name)
 # or
-record_beam_palette(palette_id)
+record_beam_palette(palette_id, name)
 ```
+The `name` is saved to `palettes.json` automatically. Never skip it — unnamed palettes make future sessions harder.
 
 ### 5. Clear the programmer
 ```

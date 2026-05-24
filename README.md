@@ -119,6 +119,30 @@ Add to your `claude_desktop_config.json`:
 | `lamp_off` | Lamp off selected heads |
 | `reset_heads` | Reset selected heads |
 
+### Palette Registry
+
+| Tool / Resource | Description |
+|----------------|-------------|
+| `list_palettes` | List all registered palettes with IDs and names |
+| `declare_palette` | Register a pre-existing console palette by name |
+| `import_palettes_csv` | Bulk-import palette names from a CSV file |
+| `palettes://registry` | MCP resource — full palette list, readable by Claude |
+
+The server maintains a local `palettes.json` file (gitignored, show-specific). `record_colour_palette`, `record_position_palette`, and `record_beam_palette` all accept an optional `name` parameter and auto-update this registry when a palette is recorded.
+
+#### CSV import format
+
+```csv
+# type, id, name
+colour, 1, Deep Blue
+colour, 2, Red
+position, 1, Centre Stage
+position, 2, Stage Right
+beam, 1, Open White
+```
+
+Type aliases accepted: `colour`/`color`/`c`, `position`/`p`, `beam`/`b` (case-insensitive).
+
 ### High-Level
 
 | Tool | Description |
